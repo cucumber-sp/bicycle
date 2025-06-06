@@ -2,13 +2,15 @@ package blockchain
 
 import (
 	"context"
+	"fmt"
+	"math/bits"
+	"strings"
+	"time"
+
 	"github.com/gobicycle/bicycle/core"
 	log "github.com/sirupsen/logrus"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
-	"math/bits"
-	"strings"
-	"time"
 )
 
 const ErrBlockNotApplied = "block is not applied"
@@ -83,6 +85,10 @@ func (s *ShardTracker) getNext() *core.ShardBlockHeader {
 
 func (s *ShardTracker) getNextMasterBlockID(ctx context.Context) (*ton.BlockIDExt, error) {
 	for {
+		if err := s.connection.waitForRateLimit(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter error: %w", err)
+		}
+
 		masterBlockID, err := s.connection.client.GetMasterchainInfo(ctx)
 		if err != nil {
 			// exit by context timeout
@@ -109,6 +115,10 @@ func (s *ShardTracker) loadShardBlocksBatch(masterBlockID *ton.BlockIDExt) (bool
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 	for {
+		if err := s.connection.waitForRateLimit(ctx); err != nil {
+			return false, fmt.Errorf("rate limiter error: %w", err)
+		}
+
 		shards, err = s.connection.client.GetBlockShardsInfo(ctx, masterBlockID)
 		if err != nil && isNotReadyError(err) { // TODO: clarify error type
 			time.Sleep(time.Second)
@@ -219,6 +229,10 @@ func convertBlockToShardHeader(block *tlb.Block, info *ton.BlockIDExt, shard byt
 
 // get shard block header for specific shard attribute with one parent
 func (c *Connection) getShardBlocksHeader(ctx context.Context, shardBlockID *ton.BlockIDExt, shard byte) (core.ShardBlockHeader, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return core.ShardBlockHeader{}, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	var (
 		err   error
 		block *tlb.Block

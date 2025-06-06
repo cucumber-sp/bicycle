@@ -4,6 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
+	"sort"
+	"strings"
+	"time"
+
 	"github.com/gobicycle/bicycle/config"
 	"github.com/gobicycle/bicycle/core"
 	log "github.com/sirupsen/logrus"
@@ -20,16 +26,18 @@ import (
 	"github.com/xssnick/tonutils-go/ton/jetton"
 	"github.com/xssnick/tonutils-go/ton/wallet"
 	"github.com/xssnick/tonutils-go/tvm/cell"
-	"math"
-	"math/big"
-	"sort"
-	"strings"
-	"time"
+	"golang.org/x/time/rate"
 )
 
 type Connection struct {
 	client   ton.APIClientWrapped
 	resolver *dns.Client
+	limiter  *rate.Limiter
+}
+
+// waitForRateLimit blocks until a token is available from the rate limiter
+func (c *Connection) waitForRateLimit(ctx context.Context) error {
+	return c.limiter.Wait(ctx)
 }
 
 func (c *Connection) WaitForBlock(seqno uint32) ton.APIClientWrapped {
@@ -100,9 +108,14 @@ func NewConnection(addr, key string) (*Connection, error) {
 	config.Config.BlockchainConfig = bcConfig
 	resolver := dns.NewDNSClient(wrappedClient, rootDNS)
 
+	// Initialize rate limiter with configurable rate (requests per second)
+	// Allow burst of up to 1 second worth of requests
+	rateLimiter := rate.NewLimiter(rate.Limit(config.Config.RateLimit), config.Config.RateLimit)
+
 	return &Connection{
 		client:   wrappedClient,
 		resolver: resolver,
+		limiter:  rateLimiter,
 	}, nil
 }
 
@@ -196,6 +209,10 @@ func (c *Connection) GetJettonWalletAddress(
 	owner *address.Address,
 	jettonMaster *address.Address,
 ) (*address.Address, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	contr, err := c.getContract(ctx, jettonMaster)
 	if err != nil {
 		return nil, err
@@ -218,6 +235,9 @@ func (c *Connection) GetJettonBalanceByOwner(
 	owner *address.Address,
 	jettonMaster *address.Address,
 ) (*big.Int, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
 
 	jettonMasterClient := jetton.NewJettonMasterClient(c.client, jettonMaster)
 
@@ -233,6 +253,9 @@ func (c *Connection) DnsResolveSmc(
 	ctx context.Context,
 	domainName string,
 ) (*address.Address, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
 
 	// TODO: it is necessary to distinguish network errors from the impossibility of resolving
 	domain, err := c.resolver.Resolve(ctx, domainName)
@@ -296,6 +319,10 @@ func (c *Connection) GenerateDepositJettonWalletForProxy(
 	addr *address.Address,
 	err error,
 ) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	contr, err := c.getContract(ctx, jettonMaster)
 	if err != nil {
 		return nil, nil, err
@@ -324,6 +351,10 @@ func (c *Connection) GenerateDepositJettonWalletForProxy(
 }
 
 func (c *Connection) getContract(ctx context.Context, addr *address.Address) (contract, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return contract{}, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	block, err := c.client.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return contract{}, err
@@ -410,6 +441,10 @@ func newEmulator(code, data *boc.Cell) (*tvm.Emulator, error) {
 // Get method get_wallet_data() returns (int balance, slice owner, slice jetton, cell jetton_wallet_code)
 // Returns jetton balance for custom block in basic units
 func (c *Connection) GetJettonBalance(ctx context.Context, address core.Address, blockID *ton.BlockIDExt) (*big.Int, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	jettonWallet := address.ToTonutilsAddressStd(0)
 	stack, err := c.RunGetMethod(ctx, blockID, jettonWallet, "get_wallet_data")
 	if err != nil {
@@ -433,6 +468,10 @@ func (c *Connection) GetJettonBalance(ctx context.Context, address core.Address,
 // GetLastJettonBalance
 // Returns jetton balance for last block in basic units
 func (c *Connection) GetLastJettonBalance(ctx context.Context, address *address.Address) (*big.Int, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	masterID, err := c.client.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return nil, err
@@ -447,6 +486,10 @@ func (c *Connection) GetLastJettonBalance(ctx context.Context, address *address.
 // GetAccountCurrentState
 // Returns TON balance in nanoTONs and account status
 func (c *Connection) GetAccountCurrentState(ctx context.Context, address *address.Address) (*big.Int, tlb.AccountStatus, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, "", fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	masterID, err := c.client.CurrentMasterchainInfo(ctx)
 	if err != nil {
 		return nil, "", err
@@ -475,6 +518,10 @@ func (c *Connection) GetAccountCurrentState(ctx context.Context, address *addres
 // DeployTonWallet
 // Deploys wallet contract and wait its activation
 func (c *Connection) DeployTonWallet(ctx context.Context, wallet *wallet.Wallet) error {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	balance, status, err := c.GetAccountCurrentState(ctx, wallet.Address())
 	if err != nil {
 		return err
@@ -496,6 +543,10 @@ func (c *Connection) DeployTonWallet(ctx context.Context, wallet *wallet.Wallet)
 // GetTransactionIDsFromBlock
 // Gets all transactions IDs from custom block
 func (c *Connection) GetTransactionIDsFromBlock(ctx context.Context, blockID *ton.BlockIDExt) ([]ton.TransactionShortInfo, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	var (
 		txIDList []ton.TransactionShortInfo
 		after    *ton.TransactionID3
@@ -523,6 +574,10 @@ func (c *Connection) GetTransactionIDsFromBlock(ctx context.Context, blockID *to
 // GetTransactionFromBlock
 // Gets transaction from block
 func (c *Connection) GetTransactionFromBlock(ctx context.Context, blockID *ton.BlockIDExt, txID ton.TransactionShortInfo) (*tlb.Transaction, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	tx, err := c.client.GetTransaction(ctx, blockID, address.NewAddress(0, byte(blockID.Workchain), txID.Account), txID.LT)
 	if err != nil {
 		return nil, err
@@ -535,6 +590,10 @@ func inShard(addr core.Address, shard byte) bool {
 }
 
 func (c *Connection) getCurrentNodeTime(ctx context.Context) (time.Time, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return time.Time{}, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	t, err := c.client.GetTime(ctx)
 	if err != nil {
 		return time.Time{}, err
@@ -548,6 +607,10 @@ func (c *Connection) getCurrentNodeTime(ctx context.Context) (time.Time, error) 
 // the local time is defined as the average between the beginning and end of the request.
 // Returns true if time diff < cutoff.
 func (c *Connection) CheckTime(ctx context.Context, cutoff time.Duration) (bool, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return false, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	prevTime := time.Now()
 	nodeTime, err := c.getCurrentNodeTime(ctx)
 	if err != nil {
@@ -590,6 +653,10 @@ func (c *Connection) WaitStatus(ctx context.Context, addr *address.Address, stat
 // The method is being redefined for more stable operation.
 // Gets account from prev block if impossible to get it from current block. Be careful with diff calculation between blocks.
 func (c *Connection) GetAccount(ctx context.Context, block *ton.BlockIDExt, addr *address.Address) (*tlb.Account, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	res, err := c.client.GetAccount(ctx, block, addr)
 	if err != nil && isNotReadyError(err) {
 		prevBlock, err := c.client.LookupBlock(ctx, block.Workchain, block.Shard, block.SeqNo-1)
@@ -602,6 +669,10 @@ func (c *Connection) GetAccount(ctx context.Context, block *ton.BlockIDExt, addr
 }
 
 func (c *Connection) SendExternalMessage(ctx context.Context, msg *tlb.ExternalMessage) error {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	return c.client.SendExternalMessage(ctx, msg)
 }
 
@@ -609,6 +680,10 @@ func (c *Connection) SendExternalMessage(ctx context.Context, msg *tlb.ExternalM
 // The method is being redefined for more stable operation
 // Wait until BlockIsApplied. Use context with  timeout.
 func (c *Connection) RunGetMethod(ctx context.Context, block *ton.BlockIDExt, addr *address.Address, method string, params ...any) (*ton.ExecutionResult, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -625,6 +700,10 @@ func (c *Connection) RunGetMethod(ctx context.Context, block *ton.BlockIDExt, ad
 }
 
 func (c *Connection) ListTransactions(ctx context.Context, addr *address.Address, num uint32, lt uint64, txHash []byte) ([]*tlb.Transaction, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	return c.client.ListTransactions(ctx, addr, num, lt, txHash)
 }
 
@@ -633,14 +712,26 @@ func (c *Connection) Client() ton.LiteClient {
 }
 
 func (c *Connection) CurrentMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	return c.client.CurrentMasterchainInfo(ctx)
 }
 
 func (c *Connection) GetMasterchainInfo(ctx context.Context) (*ton.BlockIDExt, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	return c.client.GetMasterchainInfo(ctx)
 }
 
 func (c *Connection) SendExternalMessageWaitTransaction(ctx context.Context, ext *tlb.ExternalMessage) (*tlb.Transaction, *ton.BlockIDExt, []byte, error) {
+	if err := c.waitForRateLimit(ctx); err != nil {
+		return nil, nil, nil, fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	return c.client.SendExternalMessageWaitTransaction(ctx, ext)
 }
 

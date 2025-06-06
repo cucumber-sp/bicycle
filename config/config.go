@@ -1,15 +1,16 @@
 package config
 
 import (
+	"log"
+	"math/big"
+	"strings"
+	"time"
+
 	"github.com/caarlos0/env/v6"
 	"github.com/shopspring/decimal"
 	"github.com/tonkeeper/tongo/boc"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/tlb"
-	"log"
-	"math/big"
-	"strings"
-	"time"
 )
 
 const MaxJettonForwardTonAmount = 20_000_000
@@ -57,6 +58,7 @@ var Config = struct {
 	WebhookToken             string `env:"WEBHOOK_TOKEN"`
 	AllowableLaggingSec      int    `env:"ALLOWABLE_LAG"`
 	ForwardTonAmount         int    `env:"FORWARD_TON_AMOUNT" envDefault:"1"`
+	RateLimit                int    `env:"RATE_LIMIT" envDefault:"100"`
 	Jettons                  map[string]Jetton
 	Ton                      Cutoffs
 	ColdWallet               *address.Address
