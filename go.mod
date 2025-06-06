@@ -1,8 +1,6 @@
 module github.com/gobicycle/bicycle
 
-go 1.23.0
-
-toolchain go1.24.4
+go 1.22.1
 
 require (
 	github.com/caarlos0/env/v6 v6.10.1
@@ -14,6 +12,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/tonkeeper/tongo v1.9.9
 	github.com/xssnick/tonutils-go v1.10.2
+	golang.org/x/time v0.8.0
 )
 
 require (
@@ -37,6 +36,5 @@ require (
 	golang.org/x/exp v0.0.0-20230116083435-1de6713980de // indirect
 	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
-	golang.org/x/time v0.12.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 )
